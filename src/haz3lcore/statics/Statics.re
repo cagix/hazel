@@ -52,6 +52,16 @@ module Map = {
       info_map,
       [],
     );
+  let warning_ids = (term_ranges: TermRanges.t, info_map: t): list(Id.t) =>
+    Id.Map.fold(
+      (id, info, acc) =>
+        switch (Id.Map.find_opt(id, term_ranges)) {
+        | Some(_) when Info.is_warning(info) => [id, ...acc]
+        | _ => acc
+        },
+      info_map,
+      [],
+    );
 };
 
 let map_m = (f, xs, m: Map.t) =>
@@ -164,12 +174,26 @@ and uexp_to_info_map =
     | Ana(Unknown(SynSwitch)) => Mode.Syn
     | _ => mode
     };
-  let add' = (~self, ~co_ctx, m) => {
+  let add' = (~self, ~co_ctx, ~warning_exp=None, m) => {
+    let warning_exp: Info.warning_exp =
+      switch (warning_exp) {
+      | Some(w) => w
+      | None => None
+      };
     let info =
-      Info.derived_exp(~uexp, ~ctx, ~mode, ~ancestors, ~self, ~co_ctx);
+      Info.derived_exp(
+        ~uexp,
+        ~ctx,
+        ~mode,
+        ~ancestors,
+        ~self,
+        ~co_ctx,
+        ~warning_exp: Info.warning_exp,
+      );
     (info, add_info(ids, InfoExp(info), m));
   };
-  let add = (~self, ~co_ctx, m) => add'(~self=Common(self), ~co_ctx, m);
+  let add = (~self, ~co_ctx, ~warning_exp=None, m) =>
+    add'(~self=Common(self), ~co_ctx, ~warning_exp, m);
   let ancestors = [UExp.rep_id(uexp)] @ ancestors;
   let uexp_to_info_map =
       (
@@ -462,7 +486,12 @@ and upat_to_info_map =
       m: Map.t,
     )
     : (Info.pat, Map.t) => {
-  let add = (~self, ~ctx, m) => {
+  let add = (~self, ~ctx, ~warning_pat=None, m) => {
+    let warning_pat: Info.warning_pat =
+      switch (warning_pat) {
+      | Some(w) => w
+      | None => None
+      };
     let info =
       Info.derived_pat(
         ~upat,
@@ -471,6 +500,7 @@ and upat_to_info_map =
         ~mode,
         ~ancestors,
         ~self=Common(self),
+        ~warning_pat,
       );
     (info, add_info(ids, InfoPat(info), m));
   };
@@ -514,7 +544,12 @@ and upat_to_info_map =
     let ctx_typ =
       Info.fixed_typ_pat(ctx, mode, Common(Just(Unknown(Internal))));
     let entry = Ctx.VarEntry({name, id: UPat.rep_id(upat), typ: ctx_typ});
-    add(~self=Just(unknown), ~ctx=Ctx.extend(ctx, entry), m);
+    let warning_pat: option(Info.warning_pat) =
+      switch (VarMap.lookup(co_ctx, name)) {
+      | None => Some(UnusedVariable(name))
+      | Some(_) => None
+      };
+    add(~self=Just(unknown), ~ctx=Ctx.extend(ctx, entry), ~warning_pat, m);
   | Tuple(ps) =>
     let modes = Mode.of_prod(ctx, mode, List.length(ps));
     let (ctx, tys, m) = ctx_fold(ctx, m, ps, modes);

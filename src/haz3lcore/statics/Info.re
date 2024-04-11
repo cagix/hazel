@@ -126,6 +126,22 @@ type status_variant =
   | Unique
   | Duplicate;
 
+[@deriving (show({with_path: false}), sexp, yojson)]
+type warning_exp =
+  | UnusedVariable(string)
+  | None;
+
+[@deriving (show({with_path: false}), sexp, yojson)]
+type warning_pat =
+  | UnusedVariable(string)
+  | None;
+
+[@deriving (show({with_path: false}), sexp, yojson)]
+type warning_common =
+  | WarningExp(warning_exp)
+  | WarningPat(warning_pat)
+  | None;
+
 /* Expectation imposed on a type by the parent form.
    TODO: This is fundamentally syntactic and should
    eventually be reimplemeted via a seperate sort */
@@ -193,7 +209,8 @@ type exp = {
   co_ctx: CoCtx.t, /* Locally free variables */
   cls: Term.Cls.t, /* DERIVED: Syntax class (i.e. form name) */
   status: status_exp, /* DERIVED: Ok/Error statuses for display */
-  ty: Typ.t /* DERIVED: Type after nonempty hole fixing */
+  ty: Typ.t, /* DERIVED: Type after nonempty hole fixing */
+  warning: warning_exp /* Warnings */
 };
 
 [@deriving (show({with_path: false}), sexp, yojson)]
@@ -207,6 +224,7 @@ type pat = {
   cls: Term.Cls.t,
   status: status_pat,
   ty: Typ.t,
+  warning: warning_pat,
 };
 
 [@deriving (show({with_path: false}), sexp, yojson)]
@@ -218,6 +236,7 @@ type typ = {
   cls: Term.Cls.t,
   status: status_typ,
   ty: Typ.t,
+  // TODO: Add warnings
 };
 
 [@deriving (show({with_path: false}), sexp, yojson)]
@@ -227,6 +246,7 @@ type tpat = {
   ctx: Ctx.t,
   cls: Term.Cls.t,
   status: status_tpat,
+  // TODO: Add warnings
 };
 
 [@deriving (show({with_path: false}), sexp, yojson)]
@@ -472,6 +492,16 @@ let is_error = (ci: t): bool => {
   };
 };
 
+let is_warning = (ci: t): bool => {
+  switch (ci) {
+  | InfoExp({warning, _}) => warning != None
+  | InfoPat({warning, _}) => warning != None
+  | InfoTyp(_)
+  | InfoTPat(_)
+  | Secondary(_) => false
+  };
+};
+
 /* Determined the type of an expression or pattern 'after hole fixing';
    that is, all ill-typed terms are considered to be 'wrapped in
    non-empty holes', i.e. assigned Unknown type. */
@@ -496,20 +526,52 @@ let fixed_typ_exp = (ctx, mode: Mode.t, self: Self.exp): Typ.t =>
 
 /* Add derivable attributes for expression terms */
 let derived_exp =
-    (~uexp: UExp.t, ~ctx, ~mode, ~ancestors, ~self, ~co_ctx): exp => {
+    (
+      ~uexp: UExp.t,
+      ~ctx,
+      ~mode,
+      ~ancestors,
+      ~self,
+      ~co_ctx,
+      ~warning_exp: warning_exp,
+    )
+    : exp => {
   let cls = Cls.Exp(UExp.cls_of_term(uexp.term));
   let status = status_exp(ctx, mode, self);
   let ty = fixed_typ_exp(ctx, mode, self);
-  {cls, self, ty, mode, status, ctx, co_ctx, ancestors, term: uexp};
+  {
+    cls,
+    self,
+    ty,
+    mode,
+    status,
+    ctx,
+    co_ctx,
+    ancestors,
+    term: uexp,
+    warning: warning_exp,
+  };
 };
 
 /* Add derivable attributes for pattern terms */
 let derived_pat =
-    (~upat: UPat.t, ~ctx, ~co_ctx, ~mode, ~ancestors, ~self): pat => {
+    (~upat: UPat.t, ~ctx, ~co_ctx, ~mode, ~ancestors, ~self, ~warning_pat)
+    : pat => {
   let cls = Cls.Pat(UPat.cls_of_term(upat.term));
   let status = status_pat(ctx, mode, self);
   let ty = fixed_typ_pat(ctx, mode, self);
-  {cls, self, mode, ty, status, ctx, co_ctx, ancestors, term: upat};
+  {
+    cls,
+    self,
+    mode,
+    ty,
+    status,
+    ctx,
+    co_ctx,
+    ancestors,
+    term: upat,
+    warning: warning_pat,
+  };
 };
 
 /* Add derivable attributes for types */

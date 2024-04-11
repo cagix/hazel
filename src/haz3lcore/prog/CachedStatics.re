@@ -5,12 +5,14 @@ type statics = {
   term: Term.UExp.t,
   info_map: Statics.Map.t,
   error_ids: list(Id.t),
+  warning_ids: list(Id.t),
 };
 
 let empty_statics: statics = {
   term: Term.UExp.{ids: [Id.invalid], term: Triv},
   info_map: Id.Map.empty,
   error_ids: [],
+  warning_ids: [],
 };
 
 module Key = {

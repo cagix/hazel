@@ -61,6 +61,8 @@ let view =
       ~selected=pos == this_pos,
       ~error_ids=
         Statics.Map.error_ids(editor.state.meta.term_ranges, di.info_map),
+      ~warning_ids=
+        Statics.Map.warning_ids(editor.state.meta.term_ranges, di.info_map),
       ~inject,
       ~ui_state,
       ~mousedown_updates=[SwitchEditor(this_pos)],

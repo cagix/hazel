@@ -648,6 +648,7 @@ module F = (ExerciseEnv: ExerciseEnv) => {
       {
         term,
         error_ids: Statics.Map.error_ids(term_ranges, info_map),
+        warning_ids: Statics.Map.warning_ids(term_ranges, info_map),
         info_map,
       };
     };

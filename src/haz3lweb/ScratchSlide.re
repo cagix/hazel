@@ -52,5 +52,7 @@ let mk_statics =
   let info_map = Interface.Statics.mk_map_ctx(settings.core, ctx_init, term);
   let error_ids =
     Statics.Map.error_ids(editor.state.meta.term_ranges, info_map);
-  {term, info_map, error_ids};
+  let warning_ids =
+    Statics.Map.warning_ids(editor.state.meta.term_ranges, info_map);
+  {term, info_map, error_ids, warning_ids};
 };
