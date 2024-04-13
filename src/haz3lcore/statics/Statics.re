@@ -52,6 +52,7 @@ module Map = {
       info_map,
       [],
     );
+
   let warning_ids = (term_ranges: TermRanges.t, info_map: t): list(Id.t) =>
     Id.Map.fold(
       (id, info, acc) =>
@@ -545,9 +546,18 @@ and upat_to_info_map =
       Info.fixed_typ_pat(ctx, mode, Common(Just(Unknown(Internal))));
     let entry = Ctx.VarEntry({name, id: UPat.rep_id(upat), typ: ctx_typ});
     let warning_pat: option(Info.warning_pat) =
-      switch (VarMap.lookup(co_ctx, name)) {
-      | None => Some(UnusedVariable(name))
-      | Some(_) => None
+      /* Warn about unused variables
+            - if not in CoCtx, then unused
+            - Display warning iff not a special variable (starts with "_")
+              and body does not contain a hole
+         */
+      if (String.starts_with(~prefix="_", name)) {
+        None;
+      } else {
+        switch (VarMap.lookup(co_ctx, name)) {
+        | None => Some(UnusedVariable(name))
+        | Some(_) => None
+        };
       };
     add(~self=Just(unknown), ~ctx=Ctx.extend(ctx, entry), ~warning_pat, m);
   | Tuple(ps) =>
