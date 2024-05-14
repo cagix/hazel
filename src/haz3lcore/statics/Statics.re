@@ -412,8 +412,13 @@ and uexp_to_info_map =
         p_ctxs,
       );
     let e_tys = List.map(Info.exp_ty, es);
+    // Create co-ctxs for each case
     let e_co_ctxs =
-      List.map2(CoCtx.mk(ctx), p_ctxs, List.map(Info.exp_co_ctx, es));
+      List.map2(
+        (p_ctx, e_co_ctx) => CoCtx.mk(p_ctx, ctx, e_co_ctx),
+        p_ctxs,
+        List.map(Info.exp_co_ctx, es),
+      );
     /* Add co-ctxs to patterns */
     let (_, m) =
       map_m(
