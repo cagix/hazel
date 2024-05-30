@@ -187,11 +187,22 @@ let typ_err_view = (ok: Info.error_typ) =>
     ]
   };
 
-let exp_view =
-    (cls: Term.Cls.t, status: Info.status_exp, warning: Info.warning_exp) =>
+let rec exp_view =
+        (cls: Term.Cls.t, status: Info.status_exp, warning: Info.warning_exp) =>
   switch (status) {
   | InHole(FreeVariable(name)) =>
     div_err([code_err(name), text("not found")])
+  | InHole(InexhaustiveMatch(additional_err)) =>
+    let cls_str = Term.Cls.show(cls);
+    switch (additional_err) {
+    | None => div_err([text(cls_str ++ " is inexhaustive")])
+    | Some(err) =>
+      let cls_str = String.uncapitalize_ascii(cls_str);
+      div_err([
+        exp_view(cls, InHole(Common(err)), None),
+        text("; " ++ cls_str ++ " is inexhaustive"),
+      ]);
+    };
   | InHole(UnusedDeferral) =>
     div_err([text("Deferral must appear as a function argument")])
   | InHole(BadPartialAp(NoDeferredArgs)) =>
@@ -218,10 +229,19 @@ let exp_view =
     }
   };
 
-let pat_view =
-    (cls: Term.Cls.t, status: Info.status_pat, warning: Info.warning_pat) =>
+let rec pat_view =
+        (cls: Term.Cls.t, status: Info.status_pat, warning: Info.warning_pat) =>
   switch (status) {
   | InHole(ExpectedConstructor) => div_err([text("Expected a constructor")])
+  | InHole(Redundant(additional_err)) =>
+    switch (additional_err) {
+    | None => div_err([text("Pattern is redundant")])
+    | Some(err) =>
+      div_err([
+        pat_view(cls, InHole(err), None),
+        text("; pattern is redundant"),
+      ])
+    }
   | InHole(Common(error)) => div_err(common_err_view(cls, error))
   | NotInHole(ok) =>
     switch (warning) {
