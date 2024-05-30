@@ -147,6 +147,10 @@ let common_warn_view =
   common_ok_view(cls, ok)
   @ (
     switch (cls, warning) {
+    | (_, WarningPat(UnusedVariable(name))) => [
+        text("Unused Variable: "),
+        code_warn(name),
+      ]
     | (_, _) => [text(Info.show_warning_common(warning))]
     }
   );
