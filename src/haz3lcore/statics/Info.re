@@ -219,7 +219,8 @@ type exp = {
   cls: Term.Cls.t, /* DERIVED: Syntax class (i.e. form name) */
   status: status_exp, /* DERIVED: Ok/Error statuses for display */
   ty: Typ.t, /* DERIVED: Type after nonempty hole fixing */
-  warning: warning_exp /* Warnings */
+  warning: warning_exp, /* Warnings */
+  has_hole: bool,
 };
 
 [@deriving (show({with_path: false}), sexp, yojson)]
@@ -234,6 +235,7 @@ type pat = {
   status: status_pat,
   ty: Typ.t,
   warning: warning_pat,
+  has_hole: bool,
   constraint_: Constraint.t,
 };
 
@@ -552,13 +554,29 @@ let is_error = (ci: t): bool => {
 };
 
 let is_warning = (ci: t): bool => {
+  /* TODO: no warning if hole in body */
   switch (ci) {
-  | InfoExp({warning, _}) => warning != None
-  | InfoPat({warning, _}) => warning != None
+  | InfoExp({warning, has_hole, _}) => warning != None && !has_hole
+  | InfoPat({warning, has_hole, _}) => warning != None && !has_hole
   | InfoTyp(_)
   | InfoTPat(_)
   | Secondary(_) => false
   };
+};
+
+let has_hole = (ci: t): bool => {
+  switch (ci) {
+  | InfoExp({has_hole, _}) =>
+    print_endline("has_hole: " ++ string_of_bool(has_hole));
+    has_hole;
+  | InfoPat(_)
+  | InfoTyp(_)
+  | InfoTPat(_)
+  | Secondary(_) => false
+  };
+};
+let has_hole_exp = (ci: exp): bool => {
+  ci.has_hole;
 };
 
 /* Determined the type of an expression or pattern 'after hole fixing';
@@ -618,6 +636,7 @@ let derived_exp =
       ~self,
       ~co_ctx,
       ~warning_exp: warning_exp,
+      ~has_hole,
     )
     : exp => {
   let cls = Cls.Exp(UExp.cls_of_term(uexp.term));
@@ -634,6 +653,7 @@ let derived_exp =
     ancestors,
     term: uexp,
     warning: warning_exp,
+    has_hole,
   };
 };
 
@@ -648,6 +668,7 @@ let derived_pat =
       ~self,
       ~warning_pat,
       ~constraint_,
+      ~has_hole,
     )
     : pat => {
   let cls = Cls.Pat(UPat.cls_of_term(upat.term));
@@ -666,6 +687,7 @@ let derived_pat =
     term: upat,
     warning: warning_pat,
     constraint_,
+    has_hole,
   };
 };
 

@@ -151,6 +151,7 @@ let rec any_to_info_map =
         ~co_ctx=CoCtx.empty,
         ~ancestors,
         ~ctx,
+        ~has_hole=false,
         p,
         m,
       )
@@ -193,7 +194,7 @@ and uexp_to_info_map =
     | Ana(Unknown(SynSwitch)) => Mode.Syn
     | _ => mode
     };
-  let add' = (~self, ~co_ctx, ~warning_exp=None, m) => {
+  let add' = (~self, ~co_ctx, ~warning_exp=None, ~has_hole, m) => {
     let warning_exp: Info.warning_exp =
       switch (warning_exp) {
       | Some(w) => w
@@ -207,12 +208,13 @@ and uexp_to_info_map =
         ~ancestors,
         ~self,
         ~co_ctx,
-        ~warning_exp: Info.warning_exp,
+        ~warning_exp,
+        ~has_hole,
       );
     (info, add_info(ids, InfoExp(info), m));
   };
-  let add = (~self, ~co_ctx, ~warning_exp=None, m) =>
-    add'(~self=Common(self), ~co_ctx, ~warning_exp, m);
+  let add = (~self, ~co_ctx, ~warning_exp=None, ~has_hole, m) =>
+    add'(~self=Common(self), ~co_ctx, ~warning_exp, ~has_hole, m);
   let ancestors = [UExp.rep_id(uexp)] @ ancestors;
   let uexp_to_info_map =
       (
@@ -234,25 +236,27 @@ and uexp_to_info_map =
       ([], m),
     );
   let go_pat = upat_to_info_map(~ctx, ~ancestors);
-  let hole_co_ctx =
-    switch (term) {
-    | MultiHole(_)
-    | EmptyHole
-    | Invalid(_) =>
-      CoCtx.singleton("__hole__", UExp.rep_id(uexp), Mode.ty_of(mode))
-    | _ => CoCtx.empty
-    };
-  let atomic = self => add(~self, ~co_ctx=hole_co_ctx, m);
+  let atomic = self => {
+    let is_hole =
+      switch (term) {
+      | MultiHole(_)
+      | EmptyHole
+      | Invalid(_) => true
+      | _ => false
+      };
+    add(~self, ~co_ctx=CoCtx.empty, ~has_hole=is_hole, m);
+  };
+
   switch (term) {
   | MultiHole(tms) =>
     // TODO: make sure this works for the co-ctx hole stuff
     let (co_ctxs, m) = multi(~ctx, ~ancestors, m, tms);
-    add(~self=IsMulti, ~co_ctx=CoCtx.union(co_ctxs), m);
-  | Invalid(token) => atomic(BadToken(token)) // HOLE IN CO-CTX
-  | EmptyHole => atomic(Just(Unknown(Internal))) // HOLE IN CO-CTX
+    add(~self=IsMulti, ~co_ctx=CoCtx.union(co_ctxs), ~has_hole=true, m);
+  | Invalid(token) => atomic(BadToken(token))
+  | EmptyHole => atomic(Just(Unknown(Internal)))
   | Triv => atomic(Just(Prod([])))
   | Deferral(position) =>
-    add'(~self=IsDeferral(position), ~co_ctx=CoCtx.empty, m)
+    add'(~self=IsDeferral(position), ~co_ctx=CoCtx.empty, ~has_hole=false, m)
   | Bool(_) => atomic(Just(Bool))
   | Int(_) => atomic(Just(Int))
   | Float(_) => atomic(Just(Float))
@@ -261,18 +265,24 @@ and uexp_to_info_map =
     let ids = List.map(UExp.rep_id, es);
     let modes = Mode.of_list_lit(ctx, List.length(es), mode);
     let (es, m) = map_m_go(m, modes, es);
+    /* propagate hole-in-body term up */
+    let has_hole = List.exists(Info.has_hole_exp, es);
     let tys = List.map(Info.exp_ty, es);
     add(
       ~self=Self.listlit(~empty=Unknown(Internal), ctx, tys, ids),
       ~co_ctx=CoCtx.union(List.map(Info.exp_co_ctx, es)),
+      ~has_hole,
       m,
     );
   | Cons(hd, tl) =>
     let (hd, m) = go(~mode=Mode.of_cons_hd(ctx, mode), hd, m);
     let (tl, m) = go(~mode=Mode.of_cons_tl(ctx, mode, hd.ty), tl, m);
+    /* propagate hole-in-body term up */
+    let has_hole = Info.has_hole_exp(hd) || Info.has_hole_exp(tl);
     add(
       ~self=Just(List(hd.ty)),
       ~co_ctx=CoCtx.union([hd.co_ctx, tl.co_ctx]),
+      ~has_hole,
       m,
     );
   | ListConcat(e1, e2) =>
@@ -280,20 +290,26 @@ and uexp_to_info_map =
     let ids = List.map(Term.UExp.rep_id, [e1, e2]);
     let (e1, m) = go(~mode, e1, m);
     let (e2, m) = go(~mode, e2, m);
+    /* propagate hole-in-body term up */
+    let has_hole = Info.has_hole_exp(e1) || Info.has_hole_exp(e2);
     add(
       ~self=Self.list_concat(ctx, [e1.ty, e2.ty], ids),
       ~co_ctx=CoCtx.union([e1.co_ctx, e2.co_ctx]),
+      ~has_hole,
       m,
     );
   | Var(name) =>
     add'(
       ~self=Self.of_exp_var(ctx, name),
       ~co_ctx=CoCtx.singleton(name, UExp.rep_id(uexp), Mode.ty_of(mode)),
+      ~has_hole=false,
       m,
     )
   | Parens(e) =>
     let (e, m) = go(~mode, e, m);
-    add(~self=Just(e.ty), ~co_ctx=e.co_ctx, m);
+    /* propagate hole-in-body term up */
+    let has_hole = Info.has_hole_exp(e);
+    add(~self=Just(e.ty), ~co_ctx=e.co_ctx, ~has_hole, m);
   | UnOp(Meta(Unquote), e) when is_in_filter =>
     let e: UExp.t = {
       ids: e.ids,
@@ -307,39 +323,63 @@ and uexp_to_info_map =
     let ty_in = Typ.Var("$Meta");
     let ty_out = Typ.Unknown(Internal);
     let (e, m) = go(~mode=Ana(ty_in), e, m);
-    add(~self=Just(ty_out), ~co_ctx=e.co_ctx, m);
+    /* propagate hole-in-body term up */
+    let has_hole = Info.has_hole_exp(e);
+    add(~self=Just(ty_out), ~co_ctx=e.co_ctx, ~has_hole, m);
   | UnOp(op, e) =>
     let (ty_in, ty_out) = typ_exp_unop(op);
     let (e, m) = go(~mode=Ana(ty_in), e, m);
-    add(~self=Just(ty_out), ~co_ctx=e.co_ctx, m);
+    let has_hole = Info.has_hole_exp(e);
+    add(~self=Just(ty_out), ~co_ctx=e.co_ctx, ~has_hole, m);
   | BinOp(op, e1, e2) =>
     let (ty1, ty2, ty_out) = typ_exp_binop(op);
     let (e1, m) = go(~mode=Ana(ty1), e1, m);
     let (e2, m) = go(~mode=Ana(ty2), e2, m);
-    add(~self=Just(ty_out), ~co_ctx=CoCtx.union([e1.co_ctx, e2.co_ctx]), m);
+    /* propagate hole-in-body term up */
+    let has_hole = Info.has_hole_exp(e1) || Info.has_hole_exp(e2);
+    add(
+      ~self=Just(ty_out),
+      ~co_ctx=CoCtx.union([e1.co_ctx, e2.co_ctx]),
+      ~has_hole,
+      m,
+    );
   | Tuple(es) =>
     let modes = Mode.of_prod(ctx, mode, List.length(es));
     let (es, m) = map_m_go(m, modes, es);
+    /* propagate hole-in-body term up */
+    let has_hole = List.exists(Info.has_hole_exp, es);
     add(
       ~self=Just(Prod(List.map(Info.exp_ty, es))),
       ~co_ctx=CoCtx.union(List.map(Info.exp_co_ctx, es)),
+      ~has_hole,
       m,
     );
   | Test(e) =>
     let (e, m) = go(~mode=Ana(Bool), e, m);
-    add(~self=Just(Prod([])), ~co_ctx=e.co_ctx, m);
+    let has_hole = Info.has_hole_exp(e);
+    add(~self=Just(Prod([])), ~co_ctx=e.co_ctx, ~has_hole, m);
   | Filter(_, cond, body) =>
     let (cond, m) = go(~mode=Syn, cond, m, ~is_in_filter=true);
     let (body, m) = go(~mode, body, m);
+    /* propagate hole-in-body term up */
+    let has_hole = Info.has_hole_exp(cond) || Info.has_hole_exp(body);
     add(
       ~self=Just(body.ty),
       ~co_ctx=CoCtx.union([cond.co_ctx, body.co_ctx]),
+      ~has_hole,
       m,
     );
   | Seq(e1, e2) =>
     let (e1, m) = go(~mode=Syn, e1, m);
     let (e2, m) = go(~mode, e2, m);
-    add(~self=Just(e2.ty), ~co_ctx=CoCtx.union([e1.co_ctx, e2.co_ctx]), m);
+    /* propagate hole-in-body term up */
+    let has_hole = Info.has_hole_exp(e1) || Info.has_hole_exp(e2);
+    add(
+      ~self=Just(e2.ty),
+      ~co_ctx=CoCtx.union([e1.co_ctx, e2.co_ctx]),
+      ~has_hole,
+      m,
+    );
   | Constructor(ctr) => atomic(Self.of_ctr(ctx, ctr))
   | Ap(fn, arg)
   | Pipeline(arg, fn) =>
@@ -351,7 +391,12 @@ and uexp_to_info_map =
       Id.is_nullary_ap_flag(arg.term.ids)
       && !Typ.is_consistent(ctx, ty_in, Prod([]))
         ? BadTrivAp(ty_in) : Just(ty_out);
-    add(~self, ~co_ctx=CoCtx.union([fn.co_ctx, arg.co_ctx]), m);
+    /* propagate hole-in-body term up */
+    let has_hole =
+      Info.has_hole_exp(fn)
+      || Info.has_hole_exp(arg)
+      || self != Just(ty_out);
+    add(~self, ~co_ctx=CoCtx.union([fn.co_ctx, arg.co_ctx]), ~has_hole, m);
   | TypAp(fn, utyp) =>
     let typfn_mode = Mode.typap_mode;
     let (fn, m) = go(~mode=typfn_mode, fn, m);
@@ -360,8 +405,15 @@ and uexp_to_info_map =
     let ty = Term.UTyp.to_typ(ctx, utyp);
     switch (option_name) {
     | Some(name) =>
-      add(~self=Just(Typ.subst(ty, name, ty_body)), ~co_ctx=fn.co_ctx, m)
-    | None => add(~self=Just(ty_body), ~co_ctx=fn.co_ctx, m) /* invalid name matches with no free type variables. */
+      /* propagate hole-in-body term up */
+      let has_hole = Info.has_hole_exp(fn);
+      add(
+        ~self=Just(Typ.subst(ty, name, ty_body)),
+        ~co_ctx=fn.co_ctx,
+        ~has_hole,
+        m,
+      );
+    | None => add(~self=Just(ty_body), ~co_ctx=fn.co_ctx, ~has_hole=true, m) /* invalid name matches with no free type variables. */
     };
   | DeferredAp(fn, args) =>
     let fn_mode = Mode.of_ap(ctx, mode, UExp.ctr_name(fn));
@@ -373,7 +425,14 @@ and uexp_to_info_map =
     let modes = Mode.of_deferred_ap_args(num_args, ty_ins);
     let (args, m) = map_m_go(m, modes, args);
     let arg_co_ctx = CoCtx.union(List.map(Info.exp_co_ctx, args));
-    add'(~self, ~co_ctx=CoCtx.union([fn.co_ctx, arg_co_ctx]), m);
+    /* propagate hole-in-body term up */
+    let has_hole =
+      switch (Info.has_hole_exp(fn), List.find_opt(Info.has_hole_exp, args)) {
+      | (true, _) => true
+      | (_, Some(_)) => true
+      | _ => false
+      };
+    add'(~self, ~co_ctx=CoCtx.union([fn.co_ctx, arg_co_ctx]), ~has_hole, m);
   | Fun(p, e) =>
     let (mode_pat, mode_body) = Mode.of_arrow(ctx, mode);
     let (p', _) =
@@ -387,7 +446,15 @@ and uexp_to_info_map =
     let is_exhaustive = p |> Info.pat_constraint |> Incon.is_exhaustive;
     let self =
       is_exhaustive ? unwrapped_self : InexhaustiveMatch(unwrapped_self);
-    add'(~self, ~co_ctx=CoCtx.mk(ctx, p.ctx, e.co_ctx), m);
+    /* propagate hole-in-body term up */
+    let has_hole =
+      switch (Info.has_hole_exp(e), self) {
+      | (true, _) => true
+      | (_, InexhaustiveMatch(_)) => true
+      | _ => false
+      };
+    // can i change the pattern's info here?
+    add'(~self, ~co_ctx=CoCtx.mk(ctx, p.ctx, e.co_ctx), ~has_hole, m);
   | TypFun({term: Var(name), _} as utpat, body)
       when !Ctx.shadows_typ(ctx, name) =>
     let mode_body = Mode.of_forall(ctx, Some(name), mode);
@@ -398,12 +465,24 @@ and uexp_to_info_map =
         {name, id: Term.UTPat.rep_id(utpat), kind: Abstract},
       );
     let (body, m) = go'(~ctx=ctx_body, ~mode=mode_body, body, m);
-    add(~self=Just(Forall(name, body.ty)), ~co_ctx=body.co_ctx, m);
+    let has_hole = Info.has_hole_exp(body);
+    add(
+      ~self=Just(Forall(name, body.ty)),
+      ~co_ctx=body.co_ctx,
+      ~has_hole,
+      m,
+    );
   | TypFun(utpat, body) =>
     let mode_body = Mode.of_forall(ctx, None, mode);
     let m = utpat_to_info_map(~ctx, ~ancestors, utpat, m) |> snd;
     let (body, m) = go(~mode=mode_body, body, m);
-    add(~self=Just(Forall("?", body.ty)), ~co_ctx=body.co_ctx, m);
+    let has_hole = Info.has_hole_exp(body);
+    add(
+      ~self=Just(Forall("?", body.ty)),
+      ~co_ctx=body.co_ctx,
+      ~has_hole,
+      m,
+    );
   | Let(p, def, body) =>
     let (p_syn, _) =
       go_pat(~is_synswitch=true, ~co_ctx=CoCtx.empty, ~mode=Syn, p, m);
@@ -451,12 +530,20 @@ and uexp_to_info_map =
         (def, def_ctx, m, ty_p_ana);
       };
     let (body, m) = go'(~ctx=p_ana_ctx, ~mode, body, m);
+    print_endline(
+      "let (pat: "
+      ++ UPat.show(p)
+      ++ " body hole: "
+      ++ string_of_bool(Info.has_hole_exp(body)),
+    );
+    let has_hole = List.exists(Info.has_hole_exp, [def, body]);
     /* add co_ctx to pattern */
     let (p_ana, m) =
       go_pat(
         ~is_synswitch=false,
         ~co_ctx=body.co_ctx,
         ~mode=Ana(ty_p_ana),
+        ~has_hole,
         p,
         m,
       );
@@ -469,6 +556,7 @@ and uexp_to_info_map =
       ~self,
       ~co_ctx=
         CoCtx.union([def.co_ctx, CoCtx.mk(ctx, p_ana.ctx, body.co_ctx)]),
+      ~has_hole,
       m,
     );
   | If(e0, e1, e2) =>
@@ -476,9 +564,14 @@ and uexp_to_info_map =
     let (cond, m) = go(~mode=Ana(Bool), e0, m);
     let (cons, m) = go(~mode, e1, m);
     let (alt, m) = go(~mode, e2, m);
+    let has_hole =
+      Info.has_hole_exp(cond)
+      || Info.has_hole_exp(cons)
+      || Info.has_hole_exp(alt);
     add(
       ~self=Self.match(ctx, [cons.ty, alt.ty], branch_ids),
       ~co_ctx=CoCtx.union([cond.co_ctx, cons.co_ctx, alt.co_ctx]),
+      ~has_hole,
       m,
     );
   | Match(scrut, rules) =>
@@ -512,12 +605,19 @@ and uexp_to_info_map =
         p_ctxs,
         List.map(Info.exp_co_ctx, es),
       );
+    let e_has_holes = List.map(Info.has_hole_exp, es);
     /* Add co-ctxs to patterns */
     let (_, m) =
       map_m(
-        ((p, co_ctx)) =>
-          go_pat(~is_synswitch=false, ~co_ctx, ~mode=Mode.Ana(scrut.ty), p),
-        List.combine(ps, e_co_ctxs),
+        ((p, (co_ctx, has_hole))) =>
+          go_pat(
+            ~is_synswitch=false,
+            ~co_ctx,
+            ~mode=Mode.Ana(scrut.ty),
+            ~has_hole,
+            p,
+          ),
+        List.combine(ps, List.combine(e_co_ctxs, e_has_holes)),
         m,
       );
     let unwrapped_self: Self.exp =
@@ -537,12 +637,13 @@ and uexp_to_info_map =
         let pats_to_info_map = (ps: list(UPat.t), m) => {
           /* Add co-ctxs to patterns */
           List.fold_left(
-            ((m, acc_constraint), (p, co_ctx)) => {
+            ((m, acc_constraint), (p, (co_ctx, has_hole))) => {
               let p_constraint =
                 go_pat(
                   ~is_synswitch=false,
                   ~co_ctx,
                   ~mode=Mode.Ana(constraint_ty),
+                  ~has_hole,
                   p,
                   m,
                 )
@@ -553,6 +654,7 @@ and uexp_to_info_map =
                   ~is_synswitch=false,
                   ~co_ctx,
                   ~mode=Mode.Ana(scrut.ty),
+                  ~has_hole,
                   p,
                   m,
                 );
@@ -568,6 +670,7 @@ and uexp_to_info_map =
                   ~ancestors=p.ancestors,
                   ~self,
                   ~warning_pat=None,
+                  ~has_hole,
                   // Mark patterns as redundant at the top level
                   // because redundancy doesn't make sense in a smaller context
                   ~constraint_=p_constraint,
@@ -581,7 +684,7 @@ and uexp_to_info_map =
               );
             },
             (m, Constraint.Falsity),
-            List.combine(ps, e_co_ctxs),
+            List.combine(ps, List.combine(e_co_ctxs, e_has_holes)),
           );
         };
         let (m, final_constraint) = pats_to_info_map(ps, m);
@@ -593,19 +696,27 @@ and uexp_to_info_map =
         /* Add co-ctxs to patterns */
         let (_, m) =
           map_m(
-            ((p, co_ctx)) =>
+            ((p, (co_ctx, has_hole))) =>
               go_pat(
                 ~is_synswitch=false,
                 ~co_ctx,
                 ~mode=Mode.Ana(scrut.ty),
+                ~has_hole,
                 p,
               ),
-            List.combine(ps, e_co_ctxs),
+            List.combine(ps, List.combine(e_co_ctxs, e_has_holes)),
             m,
           );
         (unwrapped_self, m);
       };
-    add'(~self, ~co_ctx=CoCtx.union([scrut.co_ctx] @ e_co_ctxs), m);
+    let has_hole =
+      List.exists(Info.has_hole_exp, es) || Info.has_hole_exp(scrut);
+    add'(
+      ~self,
+      ~co_ctx=CoCtx.union([scrut.co_ctx] @ e_co_ctxs),
+      ~has_hole,
+      m,
+    );
   | TyAlias(typat, utyp, body) =>
     let m = utpat_to_info_map(~ctx, ~ancestors, typat, m) |> snd;
     switch (typat.term) {
@@ -651,12 +762,12 @@ and uexp_to_info_map =
         | Some(sm) => Ctx.add_ctrs(ctx_body, name, UTyp.rep_id(utyp), sm)
         | None => ctx_body
         };
-      let ({co_ctx, ty: ty_body, _}: Info.exp, m) =
+      let ({co_ctx, ty: ty_body, has_hole, _}: Info.exp, m) =
         go'(~ctx=ctx_body, ~mode, body, m);
       /* Make sure types don't escape their scope */
       let ty_escape = Typ.subst(ty_def, name, ty_body);
       let m = utyp_to_info_map(~ctx=ctx_def, ~ancestors, utyp, m) |> snd;
-      add(~self=Just(ty_escape), ~co_ctx, m);
+      add(~self=Just(ty_escape), ~co_ctx, ~has_hole, m);
     | Var(_)
     | Invalid(_)
     | EmptyHole
@@ -664,7 +775,7 @@ and uexp_to_info_map =
       let ({co_ctx, ty: ty_body, _}: Info.exp, m) =
         go'(~ctx, ~mode, body, m);
       let m = utyp_to_info_map(~ctx, ~ancestors, utyp, m) |> snd;
-      add(~self=Just(ty_body), ~co_ctx, m);
+      add(~self=Just(ty_body), ~co_ctx, ~has_hole=true, m);
     };
   };
 }
@@ -675,6 +786,7 @@ and upat_to_info_map =
       ~co_ctx,
       ~ancestors: Info.ancestors,
       ~mode: Mode.t=Mode.Syn,
+      ~has_hole: bool=false,
       {ids, term} as upat: UPat.t,
       m: Map.t,
     )
@@ -695,6 +807,7 @@ and upat_to_info_map =
         ~self=Common(self),
         ~warning_pat,
         ~constraint_,
+        ~has_hole,
       );
     (info, add_info(ids, InfoPat(info), m));
   };
@@ -770,10 +883,10 @@ and upat_to_info_map =
       Info.fixed_typ_pat(ctx, mode, Common(Just(Unknown(Internal))));
     let entry = Ctx.VarEntry({name, id: UPat.rep_id(upat), typ: ctx_typ});
     let warning_pat: option(Info.warning_pat) =
-      /* Warn about unused variables
-            - if not in CoCtx, then unused
-            - Display warning iff not a special variable (starts with "_")
-              and body does not contain a hole
+      /* Warn about unused variables:
+            - if not in CoCtx, then unused;
+            - Display only IFF not a special variable (starts with "_")
+              AND body does not contain a hole
          */
       if (String.starts_with(~prefix="_", name)
           || CoCtx.contains_hole(co_ctx)) {
