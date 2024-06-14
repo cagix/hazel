@@ -234,13 +234,22 @@ and uexp_to_info_map =
       ([], m),
     );
   let go_pat = upat_to_info_map(~ctx, ~ancestors);
-  let atomic = self => add(~self, ~co_ctx=CoCtx.empty, m);
+  let hole_co_ctx =
+    switch (term) {
+    | MultiHole(_)
+    | EmptyHole
+    | Invalid(_) =>
+      CoCtx.singleton("__hole__", UExp.rep_id(uexp), Mode.ty_of(mode))
+    | _ => CoCtx.empty
+    };
+  let atomic = self => add(~self, ~co_ctx=hole_co_ctx, m);
   switch (term) {
   | MultiHole(tms) =>
+    // TODO: make sure this works for the co-ctx hole stuff
     let (co_ctxs, m) = multi(~ctx, ~ancestors, m, tms);
     add(~self=IsMulti, ~co_ctx=CoCtx.union(co_ctxs), m);
-  | Invalid(token) => atomic(BadToken(token))
-  | EmptyHole => atomic(Just(Unknown(Internal)))
+  | Invalid(token) => atomic(BadToken(token)) // HOLE IN CO-CTX
+  | EmptyHole => atomic(Just(Unknown(Internal))) // HOLE IN CO-CTX
   | Triv => atomic(Just(Prod([])))
   | Deferral(position) =>
     add'(~self=IsDeferral(position), ~co_ctx=CoCtx.empty, m)
@@ -499,7 +508,7 @@ and uexp_to_info_map =
     // Create co-ctxs for each case
     let e_co_ctxs =
       List.map2(
-        (p_ctx, e_co_ctx) => CoCtx.mk(p_ctx, ctx, e_co_ctx),
+        (p_ctx, e_co_ctx) => CoCtx.mk(ctx, p_ctx, e_co_ctx),
         p_ctxs,
         List.map(Info.exp_co_ctx, es),
       );
@@ -766,7 +775,8 @@ and upat_to_info_map =
             - Display warning iff not a special variable (starts with "_")
               and body does not contain a hole
          */
-      if (String.starts_with(~prefix="_", name)) {
+      if (String.starts_with(~prefix="_", name)
+          || CoCtx.contains_hole(co_ctx)) {
         None;
       } else {
         switch (VarMap.lookup(co_ctx, name)) {
