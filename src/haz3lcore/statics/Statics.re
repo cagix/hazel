@@ -145,16 +145,6 @@ let typ_exp_unop: UExp.op_un => (Typ.t, Typ.t) =
   | Bool(Not) => (Bool, Bool)
   | Int(Minus) => (Int, Int);
 
-let var_is_unused = (co_ctx, name): bool =>
-  if (String.starts_with(~prefix="_", name) || CoCtx.contains_hole(co_ctx)) {
-    false;
-  } else {
-    switch (VarMap.lookup(co_ctx, name)) {
-    | None => true
-    | Some(_) => false
-    };
-  };
-
 let rec any_to_info_map =
         (~ctx: Ctx.t, ~ancestors, any: any, m: Map.t): (CoCtx.t, Map.t) =>
   switch (any) {
@@ -783,8 +773,17 @@ and upat_to_info_map =
     let ctx_typ =
       Info.fixed_typ_pat(ctx, mode, Common(Just(Unknown(Internal))));
     let entry = Ctx.VarEntry({name, id: UPat.rep_id(upat), typ: ctx_typ});
-    let warning_pat: option(Info.warning_pat) =
-      var_is_unused(co_ctx, name) ? Some(UnusedVariable(name)) : None;
+    let var_is_unused = (co_ctx, name): option(Info.warning_pat) =>
+      if (String.starts_with(~prefix="_", name)
+          || CoCtx.contains_hole(co_ctx)) {
+        None;
+      } else {
+        switch (VarMap.lookup(co_ctx, name)) {
+        | None => Some(UnusedVariable(name))
+        | Some(_) => None
+        };
+      };
+    let warning_pat: option(Info.warning_pat) = var_is_unused(co_ctx, name);
     add(
       ~self=Just(unknown),
       ~ctx=Ctx.extend(ctx, entry),
