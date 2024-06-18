@@ -56,15 +56,23 @@ module Map = {
       [],
     );
 
-  let warning_ids = (term_ranges: TermRanges.t, info_map: t): list(Id.t) =>
+  let error_and_warning_ids =
+      (term_ranges: TermRanges.t, info_map: t): (list(Id.t), list(Id.t)) =>
     Id.Map.fold(
       (id, info, acc) =>
-        switch (Id.Map.find_opt(id, term_ranges)) {
-        | Some(_) when Info.is_warning(info) => [id, ...acc]
+        switch (Id.Map.find_opt(id, term_ranges), acc) {
+        | (Some(_), (error_acc, warning_acc)) when Info.is_error(info) => (
+            [id, ...error_acc],
+            warning_acc,
+          )
+        | (Some(_), (error_acc, warning_acc)) when Info.is_warning(info) => (
+            error_acc,
+            [id, ...warning_acc],
+          )
         | _ => acc
         },
       info_map,
-      [],
+      ([], []),
     );
 };
 
@@ -136,6 +144,16 @@ let typ_exp_unop: UExp.op_un => (Typ.t, Typ.t) =
   | Meta(Unquote) => (Var("$Meta"), Unknown(Free("$Meta")))
   | Bool(Not) => (Bool, Bool)
   | Int(Minus) => (Int, Int);
+
+let var_is_unused = (co_ctx, name): bool =>
+  if (String.starts_with(~prefix="_", name) || CoCtx.contains_hole(co_ctx)) {
+    false;
+  } else {
+    switch (VarMap.lookup(co_ctx, name)) {
+    | None => true
+    | Some(_) => false
+    };
+  };
 
 let rec any_to_info_map =
         (~ctx: Ctx.t, ~ancestors, any: any, m: Map.t): (CoCtx.t, Map.t) =>
@@ -770,20 +788,7 @@ and upat_to_info_map =
       Info.fixed_typ_pat(ctx, mode, Common(Just(Unknown(Internal))));
     let entry = Ctx.VarEntry({name, id: UPat.rep_id(upat), typ: ctx_typ});
     let warning_pat: option(Info.warning_pat) =
-      /* Warn about unused variables
-            - if not in CoCtx, then unused
-            - Display warning iff not a special variable (starts with "_")
-              and body does not contain a hole
-         */
-      if (String.starts_with(~prefix="_", name)
-          || CoCtx.contains_hole(co_ctx)) {
-        None;
-      } else {
-        switch (VarMap.lookup(co_ctx, name)) {
-        | None => Some(UnusedVariable(name))
-        | Some(_) => None
-        };
-      };
+      var_is_unused(co_ctx, name) ? Some(UnusedVariable(name)) : None;
     add(
       ~self=Just(unknown),
       ~ctx=Ctx.extend(ctx, entry),
