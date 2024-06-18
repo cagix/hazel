@@ -525,11 +525,7 @@ and uexp_to_info_map =
     let e_tys = List.map(Info.exp_ty, es);
     // Create co-ctxs for each case
     let e_co_ctxs =
-      List.map2(
-        (p_ctx, e_co_ctx) => CoCtx.mk(ctx, p_ctx, e_co_ctx),
-        p_ctxs,
-        List.map(Info.exp_co_ctx, es),
-      );
+      List.map2(CoCtx.mk(ctx), p_ctxs, List.map(Info.exp_co_ctx, es));
     /* Add co-ctxs to patterns */
     let (_, m) =
       map_m(
@@ -987,11 +983,3 @@ and variant_to_info_map =
     (m, [ctr, ...ctrs]);
   };
 };
-
-let collect_errors = (map: Map.t): list((Id.t, Info.error)) =>
-  Id.Map.fold(
-    (id, info: Info.t, acc) =>
-      Option.to_list(Info.error_of(info) |> Option.map(x => (id, x))) @ acc,
-    map,
-    [],
-  );
